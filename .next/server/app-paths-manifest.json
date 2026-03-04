@@ -1,0 +1,8 @@
+{
+  "/manifest.webmanifest/route": "app/manifest.webmanifest/route.js",
+  "/_not-found/page": "app/_not-found/page.js",
+  "/page": "app/page.js",
+  "/expenses/page": "app/expenses/page.js",
+  "/wealth/page": "app/wealth/page.js",
+  "/pro/page": "app/pro/page.js"
+}
