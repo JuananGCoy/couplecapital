@@ -14,6 +14,8 @@ export function SyncHandler() {
     const setTransactions = useStore((state) => state.setTransactions);
     const setSubscriptions = useStore((state) => state.setSubscriptions);
     const setGoals = useStore((state) => state.setGoals);
+    const setAccounts = useStore((state) => state.setAccounts);
+    const setHistory = useStore((state) => state.setHistory);
     const supabase = createClient();
 
     useEffect(() => {
@@ -119,9 +121,16 @@ export function SyncHandler() {
             }
 
             // 3. Load personal data (independent of household, but inside fetchInitialData)
-            const [{ data: wealthData }, { data: invData, error: invError }] = await Promise.all([
+            const [
+                { data: wealthData },
+                { data: invData, error: invError },
+                { data: accData, error: accError },
+                { data: histData, error: histError }
+            ] = await Promise.all([
                 supabase.from("wealth").select("*").eq("user_id", user.id).single(),
-                supabase.from("investments").select("*").eq("user_id", user.id)
+                supabase.from("investments").select("*").eq("user_id", user.id),
+                supabase.from("accounts").select("*").eq("user_id", user.id),
+                supabase.from("wealth_history").select("*").eq("user_id", user.id).order("recording_date", { ascending: false })
             ]);
 
             if (wealthData) {
@@ -145,6 +154,25 @@ export function SyncHandler() {
                 })));
             }
 
+            if (!accError && accData) {
+                setAccounts(accData.map(a => ({
+                    id: a.id,
+                    name: a.name,
+                    balance: Number(a.balance),
+                    is_primary: a.is_primary,
+                    payroll: Number(a.payroll || 0)
+                })));
+            }
+
+            if (!histError && histData) {
+                setHistory(histData.map(h => ({
+                    id: h.id,
+                    recordingDate: h.recording_date,
+                    totalLiquidity: Number(h.total_liquidity),
+                    totalInvestments: Number(h.total_investments),
+                    savingsVsPrevious: Number(h.savings_vs_previous)
+                })));
+            }
         };
 
         fetchInitialData();

@@ -2,25 +2,37 @@
 
 import { useStore } from "@/store/useStore";
 import { Card } from "@/components/ui/Card";
-import { TrendingUp, Wallet, ArrowUpRight, Clock, AlertTriangle, Plus, Edit2, Trash2 } from "lucide-react";
-import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
+import { TrendingUp, Wallet, ArrowUpRight, Clock, AlertTriangle, Plus, Edit2, Trash2, Landmark, History, Save } from "lucide-react";
+import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar, Cell } from "recharts";
 import { useState } from "react";
-import { Investment } from "@/store/useStore";
+import { Investment, BankAccount, WealthSnapshot } from "@/store/useStore";
 import { createClient } from "@/lib/supabase";
 
 export default function WealthPage() {
-    const { user, wealth, investments, netWorthHistory, getExpiringAssets, updateLiquidity, updateSalary, addInvestment, deleteInvestment, updateInvestment } = useStore();
+    const {
+        user, wealth, investments, history, accounts,
+        getExpiringAssets, updateLiquidity, updateSalary,
+        addInvestment, deleteInvestment, updateInvestment,
+        addAccount, updateAccount, deleteAccount, setHistory
+    } = useStore();
+
     const expiringAssets = getExpiringAssets();
     const supabase = createClient();
 
-    // UI State for Editing
-    const [isEditingLiquidity, setIsEditingLiquidity] = useState(false);
-    const [newLiquidity, setNewLiquidity] = useState(wealth?.liquidity?.toString() || "0");
-    const [isUpdatingLiq, setIsUpdatingLiq] = useState(false);
+    // Accounts State
+    const [isAddingAcc, setIsAddingAcc] = useState(false);
+    const [accName, setAccName] = useState("");
+    const [accBalance, setAccBalance] = useState("");
+    const [editingAccId, setEditingAccId] = useState<string | null>(null);
+    const [editAccName, setEditAccName] = useState("");
+    const [editAccBalance, setEditAccBalance] = useState("");
+
+    // Salary State
     const [isEditingSalary, setIsEditingSalary] = useState(false);
     const [newSalary, setNewSalary] = useState(wealth?.salary?.toString() || "0");
     const [isUpdatingSalary, setIsUpdatingSalary] = useState(false);
 
+    // Investments State
     const [isAddingInv, setIsAddingInv] = useState(false);
     const [isSubmittingInv, setIsSubmittingInv] = useState(false);
     const [invName, setInvName] = useState("");
@@ -30,7 +42,6 @@ export default function WealthPage() {
     const [invMaturity, setInvMaturity] = useState("");
     const [isDeletingInv, setIsDeletingInv] = useState<string | null>(null);
 
-    // Editing state
     const [editingInvId, setEditingInvId] = useState<string | null>(null);
     const [editInvName, setEditInvName] = useState("");
     const [editInvAmount, setEditInvAmount] = useState("");
@@ -39,352 +50,405 @@ export default function WealthPage() {
     const [editInvMaturity, setEditInvMaturity] = useState("");
     const [isUpdatingInv, setIsUpdatingInv] = useState(false);
 
+    // Month closing state
+    const [isClosingMonth, setIsClosingMonth] = useState(false);
+
     const totalInvestments = investments.reduce((acc, curr) => acc + curr.amount, 0);
-    const netWorth = (wealth?.liquidity || 0) + totalInvestments;
+    const totalRealAccounts = accounts.reduce((acc, curr) => acc + curr.balance, 0);
+    const theoreticalLiquidity = wealth?.liquidity || 0;
+    const netWorth = totalRealAccounts + totalInvestments;
 
-    const handleUpdateLiquidity = async () => {
-        if (!user || !wealth) return;
-        setIsUpdatingLiq(true);
-        const amount = Number(newLiquidity) || 0;
+    const isDescuadrado = Math.abs(totalRealAccounts - theoreticalLiquidity) > 0.1;
 
-        const { error } = await supabase
-            .from("wealth")
-            .update({ liquidity: amount })
-            .eq("user_id", user.id);
+    // Accounts Handlers
+    const handleAddAccount = async () => {
+        if (!user || !accName || !accBalance) return;
 
-        setIsUpdatingLiq(false);
+        const newAcc = {
+            user_id: user.id,
+            name: accName,
+            balance: Number(accBalance)
+        };
 
-        if (!error) {
-            updateLiquidity(amount);
-            setIsEditingLiquidity(false);
-        } else {
-            console.error("Failed to update liquidity:", error);
+        const { data, error } = await supabase.from("accounts").insert(newAcc).select().single();
+
+        if (!error && data) {
+            addAccount({
+                id: data.id,
+                name: data.name,
+                balance: Number(data.balance)
+            });
+            setIsAddingAcc(false);
+            setAccName(""); setAccBalance("");
         }
     };
 
+    const startEditingAccount = (acc: BankAccount) => {
+        setEditingAccId(acc.id);
+        setEditAccName(acc.name);
+        setEditAccBalance(acc.balance.toString());
+    };
+
+    const handleUpdateAccount = async () => {
+        if (!editingAccId || !editAccName || !editAccBalance) return;
+
+        const updatedAcc = {
+            name: editAccName,
+            balance: Number(editAccBalance)
+        };
+
+        const { error } = await supabase.from("accounts").update(updatedAcc).eq("id", editingAccId);
+
+        if (!error) {
+            updateAccount(editingAccId, updatedAcc);
+            setEditingAccId(null);
+        }
+    };
+
+    const handleDeleteAccount = async (id: string) => {
+        const { error } = await supabase.from("accounts").delete().eq("id", id);
+        if (!error) deleteAccount(id);
+    };
+
+    const handleSyncLiquidity = async () => {
+        if (!user) return;
+        const { error } = await supabase.from("wealth").update({ liquidity: totalRealAccounts }).eq("user_id", user.id);
+        if (!error) {
+            updateLiquidity(totalRealAccounts);
+        }
+    };
+
+    // Month Closing Handler
+    const handleCloseMonth = async () => {
+        if (!user) return;
+        setIsClosingMonth(true);
+
+        const today = new Date();
+        const firstDayOfMonth = new Date(today.getFullYear(), today.getMonth(), 1).toLocaleDateString('en-CA'); // format: YYYY-MM-DD
+
+        let previousSavings = 0;
+        let savingsVsPrev = 0;
+
+        if (history.length > 0) {
+            // Compare against the most recent snapshot
+            const prev = history[0];
+            const prevTotal = prev.totalLiquidity + prev.totalInvestments;
+            savingsVsPrev = netWorth - prevTotal;
+        } else {
+            // First time closing
+            savingsVsPrev = netWorth;
+        }
+
+        const newSnapshot = {
+            user_id: user.id,
+            recording_date: firstDayOfMonth,
+            total_liquidity: totalRealAccounts,
+            total_investments: totalInvestments,
+            savings_vs_previous: savingsVsPrev
+        };
+
+        // UPSERT behavior: if they close the month twice in the same month, we just overwrite
+        const { data, error } = await supabase
+            .from("wealth_history")
+            .upsert(newSnapshot, { onConflict: 'user_id, recording_date' })
+            .select()
+            .single();
+
+        if (!error && data) {
+            // Sync liquidity automatically so "teórico" matches "real" right after closing month
+            await handleSyncLiquidity();
+
+            // To be safe, just refetch history or manually inject it
+            const { data: latestHistory } = await supabase.from("wealth_history").select("*").eq("user_id", user.id).order("recording_date", { ascending: false });
+            if (latestHistory) {
+                setHistory(latestHistory.map(h => ({
+                    id: h.id,
+                    recordingDate: h.recording_date,
+                    totalLiquidity: Number(h.total_liquidity),
+                    totalInvestments: Number(h.total_investments),
+                    savingsVsPrevious: Number(h.savings_vs_previous)
+                })));
+            }
+        } else {
+            alert("Error al guardar cierre de mes. ¿A lo mejor ya lo guardaste hoy?");
+        }
+        setIsClosingMonth(false);
+    };
+
+    // Other handlers (Salary, Investments) mostly unchanged...
     const handleUpdateSalary = async () => {
         if (!user || !wealth) return;
         setIsUpdatingSalary(true);
         const salaryAmount = Number(newSalary) || 0;
         const newTotalLiquidity = (wealth.liquidity || 0) + salaryAmount;
 
-        // Update both salary and liquidity in Supabase
-        const { error } = await supabase
-            .from("wealth")
-            .update({
-                salary: salaryAmount,
-                liquidity: newTotalLiquidity
-            })
-            .eq("user_id", user.id);
+        const { error } = await supabase.from("wealth").update({ salary: salaryAmount, liquidity: newTotalLiquidity }).eq("user_id", user.id);
 
         setIsUpdatingSalary(false);
-
         if (!error) {
             updateSalary(salaryAmount);
             updateLiquidity(newTotalLiquidity);
-            setNewLiquidity(newTotalLiquidity.toString());
             setIsEditingSalary(false);
-        } else {
-            console.error("Failed to update salary and add to liquidity:", error);
         }
     };
 
     const handleAddInvestment = async () => {
         if (!user || !invName || !invAmount) return;
         setIsSubmittingInv(true);
-
-        const newInv = {
-            user_id: user.id,
-            name: invName,
-            amount: Number(invAmount),
-            category: invCategory,
-            apy: invApy ? Number(invApy) : null,
-            maturity_date: invMaturity || null
-        };
-
-        const { data, error } = await supabase
-            .from("investments")
-            .insert(newInv)
-            .select()
-            .single();
-
+        const newInv = { user_id: user.id, name: invName, amount: Number(invAmount), category: invCategory, apy: invApy ? Number(invApy) : null, maturity_date: invMaturity || null };
+        const { data, error } = await supabase.from("investments").insert(newInv).select().single();
         setIsSubmittingInv(false);
-
         if (!error && data) {
-            addInvestment({
-                id: data.id,
-                name: data.name,
-                amount: Number(data.amount),
-                category: data.category,
-                apy: data.apy ?? undefined,
-                maturityDate: data.maturity_date ?? undefined
-            });
-            setIsAddingInv(false);
-            setInvName(""); setInvAmount(""); setInvApy(""); setInvMaturity("");
-        } else {
-            console.error("Failed to add investment:", error);
+            addInvestment({ id: data.id, name: data.name, amount: Number(data.amount), category: data.category as any, apy: data.apy ?? undefined, maturityDate: data.maturity_date ?? undefined });
+            setIsAddingInv(false); setInvName(""); setInvAmount(""); setInvApy(""); setInvMaturity("");
         }
     };
 
     const handleDeleteInvestment = async (id: string) => {
         setIsDeletingInv(id);
-        const { error } = await supabase
-            .from("investments")
-            .delete()
-            .eq("id", id);
+        const { error } = await supabase.from("investments").delete().eq("id", id);
         setIsDeletingInv(null);
-        if (!error) {
-            deleteInvestment(id);
-        }
-    };
-
-    const startEditing = (inv: Investment) => {
-        setEditingInvId(inv.id);
-        setEditInvName(inv.name);
-        setEditInvAmount(inv.amount.toString());
-        setEditInvCategory(inv.category);
-        setEditInvApy(inv.apy?.toString() || "");
-        setEditInvMaturity(inv.maturityDate || "");
+        if (!error) deleteInvestment(id);
     };
 
     const handleUpdateInvestment = async () => {
         if (!editingInvId || !editInvName || !editInvAmount) return;
         setIsUpdatingInv(true);
-
-        const updatedInv = {
-            name: editInvName,
-            amount: Number(editInvAmount),
-            category: editInvCategory,
-            apy: editInvApy ? Number(editInvApy) : null,
-            maturity_date: editInvMaturity || null
-        };
-
-        const { error } = await supabase
-            .from("investments")
-            .update(updatedInv)
-            .eq("id", editingInvId);
-
+        const updatedInv = { name: editInvName, amount: Number(editInvAmount), category: editInvCategory, apy: editInvApy ? Number(editInvApy) : null, maturity_date: editInvMaturity || null };
+        const { error } = await supabase.from("investments").update(updatedInv).eq("id", editingInvId);
         setIsUpdatingInv(false);
         if (!error) {
-            updateInvestment({
-                id: editingInvId,
-                name: editInvName,
-                amount: Number(editInvAmount),
-                category: editInvCategory,
-                apy: editInvApy ? Number(editInvApy) : undefined,
-                maturityDate: editInvMaturity || undefined
-            });
+            updateInvestment(editingInvId, { name: editInvName, amount: Number(editInvAmount), category: editInvCategory, apy: editInvApy ? Number(editInvApy) : undefined, maturityDate: editInvMaturity || undefined });
             setEditingInvId(null);
         }
     };
 
+    const formatMonth = (dateString: string) => {
+        const d = new Date(dateString);
+        return d.toLocaleDateString('es-ES', { month: 'short', year: 'numeric' }).toUpperCase();
+    };
+
+    // Calculate chart data based on history. Reversing for chronologial order.
+    const historyChartData = [...history].reverse().map(h => ({
+        name: formatMonth(h.recordingDate),
+        ahorro: h.savingsVsPrevious,
+        total: h.totalLiquidity + h.totalInvestments
+    }));
+
     return (
-        <div className="p-6 space-y-6">
-            <h1 className="text-2xl font-semibold text-slate-800">Tu Patrimonio</h1>
+        <div className="p-6 space-y-6 pb-20">
+            <div className="flex justify-between items-center mb-4">
+                <h1 className="text-2xl font-semibold text-slate-800">Tu Patrimonio</h1>
+                <button
+                    onClick={handleCloseMonth}
+                    disabled={isClosingMonth}
+                    className="flex items-center gap-2 bg-emerald-600 text-white px-3 py-1.5 rounded-full text-xs font-medium hover:bg-emerald-700 transition"
+                >
+                    <Save size={14} />
+                    {isClosingMonth ? "Guardando..." : "Cierre de Mes"}
+                </button>
+            </div>
 
             {/* Net Worth Summary */}
-            <Card className="p-5 bg-slate-900 text-white border-none shadow-xl">
-                <div className="flex items-center gap-3 mb-2 opacity-80">
-                    <TrendingUp size={20} />
-                    <h2 className="font-medium">Net Worth Total</h2>
+            <Card className="p-5 bg-gradient-to-br from-slate-900 to-slate-800 text-white border-none shadow-xl">
+                <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center gap-2 opacity-80">
+                        <TrendingUp size={16} />
+                        <h2 className="font-medium text-sm">Patrimonio Real Total</h2>
+                    </div>
                 </div>
                 <p className="text-4xl font-bold">{netWorth.toLocaleString('es-ES')} €</p>
-                <div className="mt-4 flex gap-4 text-sm">
-                    <div className="flex-1 bg-white/10 p-3 rounded-xl backdrop-blur-sm">
-                        <div className="flex justify-between items-center mb-1">
-                            <span className="opacity-70 text-xs">Liquidez</span>
-                            <button
-                                onClick={() => setIsEditingLiquidity(!isEditingLiquidity)}
-                                className="p-1 hover:bg-white/20 rounded-md transition-colors"
-                            >
-                                <Edit2 size={12} />
-                            </button>
-                        </div>
 
-                        {isEditingLiquidity ? (
-                            <div className="flex gap-2 items-center mt-2">
-                                <input
-                                    type="number"
-                                    value={newLiquidity}
-                                    onChange={e => setNewLiquidity(e.target.value)}
-                                    className="w-full bg-slate-800 text-white text-sm px-2 py-1 rounded border border-slate-700 focus:outline-none"
-                                    autoFocus
-                                />
+                <div className="mt-6 grid grid-cols-2 gap-4 text-sm">
+                    <div className="bg-white/5 p-3 rounded-xl border border-white/10 backdrop-blur-sm">
+                        <span className="opacity-70 text-xs flex items-center gap-1 mb-1"><Landmark size={12} /> Liquidez Bancos</span>
+                        <span className="font-medium text-xl block">{totalRealAccounts.toLocaleString('es-ES')} €</span>
+                        {isDescuadrado && (
+                            <div className="mt-2 pt-2 border-t border-white/10 text-xs">
+                                <span className="text-orange-300 flex items-center gap-1">
+                                    <AlertTriangle size={10} /> Teórico: {theoreticalLiquidity.toLocaleString('es-ES')}€
+                                </span>
                                 <button
-                                    onClick={handleUpdateLiquidity}
-                                    disabled={isUpdatingLiq}
-                                    className="text-emerald-400 font-bold text-xs bg-emerald-400/10 px-2 py-1.5 rounded disabled:opacity-50"
+                                    onClick={handleSyncLiquidity}
+                                    className="mt-1 text-[10px] text-emerald-400 font-medium hover:underline"
                                 >
-                                    {isUpdatingLiq ? "..." : "OK"}
-                                </button>
-                            </div>
-                        ) : (
-                            <span className="font-medium text-lg block">{(wealth?.liquidity || 0).toLocaleString('es-ES')} €</span>
-                        )}
-                    </div>
-                    <div className="flex-1 bg-white/10 p-3 rounded-xl backdrop-blur-sm">
-                        <span className="opacity-70 block text-xs mb-1">Inversiones</span>
-                        <span className="font-medium text-lg block">{totalInvestments.toLocaleString('es-ES')} €</span>
-                    </div>
-                </div>
-
-                {/* Salary Section */}
-                <div className="mt-4 pt-4 border-t border-white/10 flex items-center justify-between">
-                    <div>
-                        <span className="opacity-70 text-xs block mb-0.5">Sueldo Neto Mensual</span>
-                        {isEditingSalary ? (
-                            <div className="flex gap-2 items-center mt-1">
-                                <input
-                                    type="number"
-                                    value={newSalary}
-                                    onChange={e => setNewSalary(e.target.value)}
-                                    className="w-24 bg-slate-800 text-white text-xs px-2 py-1 rounded border border-slate-700 focus:outline-none"
-                                    autoFocus
-                                />
-                                <button
-                                    onClick={handleUpdateSalary}
-                                    disabled={isUpdatingSalary}
-                                    className="text-emerald-400 font-bold text-xs bg-emerald-400/20 px-3 py-1.5 rounded-lg border border-emerald-400/30 hover:bg-emerald-400/30 transition-colors disabled:opacity-50"
-                                >
-                                    {isUpdatingSalary ? "..." : "Ingresar Nómina"}
-                                </button>
-                                <button
-                                    onClick={() => setIsEditingSalary(false)}
-                                    className="text-slate-400 text-xs hover:text-white"
-                                >
-                                    ✕
-                                </button>
-                            </div>
-                        ) : (
-                            <div className="flex items-center gap-2 group">
-                                <span className="font-semibold text-lg">{(wealth?.salary || 0).toLocaleString('es-ES')} €</span>
-                                <button
-                                    onClick={() => setIsEditingSalary(true)}
-                                    className="p-1 hover:bg-white/20 rounded-md transition-colors opacity-40 group-hover:opacity-100"
-                                >
-                                    <Edit2 size={12} />
+                                    Sincronizar a saldos reales
                                 </button>
                             </div>
                         )}
                     </div>
-                    <div className="text-right">
-                        <span className="opacity-70 text-xs block mb-0.5">Capacidad de Ahorro</span>
-                        <span className="text-emerald-400 font-bold">~ {((wealth?.salary || 0) * 0.2).toLocaleString('es-ES')} €</span>
+                    <div className="bg-white/5 p-3 rounded-xl border border-white/10 backdrop-blur-sm">
+                        <span className="opacity-70 flex items-center gap-1 text-xs mb-1"><ArrowUpRight size={12} /> Activos Reales</span>
+                        <span className="font-medium text-xl block">{totalInvestments.toLocaleString('es-ES')} €</span>
                     </div>
                 </div>
             </Card>
 
-            {/* Alertas dinámicas si hay depósitos por vencer */}
-            {expiringAssets.length > 0 && (
-                <div className="space-y-2">
-                    {expiringAssets.map(asset => (
-                        <div key={asset.id} className="bg-orange-50 p-4 rounded-xl border border-orange-100 flex gap-3 items-center shadow-sm">
-                            <div className="p-2 bg-orange-100 text-orange-600 rounded-full">
-                                <AlertTriangle size={20} />
-                            </div>
-                            <div className="flex-1">
-                                <p className="text-orange-900 font-medium text-sm">
-                                    Depósito ({asset.amount.toLocaleString('es-ES')}€) vence pronto
-                                </p>
-                                <p className="text-orange-700 text-xs mt-0.5">
-                                    Finaliza el {new Date(asset.maturityDate!).toLocaleDateString('es-ES')}
-                                </p>
-                            </div>
+            {/* Ahorro Mensual (Excel logic) */}
+            {history.length > 0 && (
+                <div className="pt-2">
+                    <h3 className="font-semibold text-slate-800 mb-3 flex items-center gap-2">
+                        <History size={18} className="text-slate-500" />
+                        Historial de Ahorro
+                    </h3>
+                    <Card className="p-4 h-[180px] w-full bg-white shadow-sm border-slate-100">
+                        <ResponsiveContainer width="100%" height="100%">
+                            <BarChart data={historyChartData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#E2E8F0" />
+                                <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#64748b' }} />
+                                <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#64748b' }} />
+                                <Tooltip
+                                    cursor={{ fill: 'transparent' }}
+                                    contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
+                                    formatter={(value: number) => [`${value.toLocaleString('es-ES')} €`, 'Ahorro mensual']}
+                                />
+                                <Bar dataKey="ahorro" radius={[4, 4, 0, 0]}>
+                                    {historyChartData.map((entry, index) => (
+                                        <Cell key={`cell-${index}`} fill={entry.ahorro >= 0 ? '#10b981' : '#ef4444'} />
+                                    ))}
+                                </Bar>
+                            </BarChart>
+                        </ResponsiveContainer>
+                    </Card>
+
+                    <div className="mt-3 overflow-x-auto pb-2">
+                        <div className="flex gap-3 snap-x">
+                            {history.slice(0, 4).map(h => (
+                                <div key={h.id} className="min-w-[140px] snap-center bg-slate-50 border border-slate-100 p-3 rounded-xl text-center">
+                                    <div className="text-xs text-slate-500 font-medium tracking-wide mb-1">{formatMonth(h.recordingDate)}</div>
+                                    <div className={`font-bold ${h.savingsVsPrevious >= 0 ? 'text-emerald-500' : 'text-red-500'}`}>
+                                        {h.savingsVsPrevious > 0 ? '+' : ''}{h.savingsVsPrevious.toLocaleString('es-ES')} €
+                                    </div>
+                                    <div className="text-[10px] text-slate-400 mt-1">Total: {(h.totalLiquidity + h.totalInvestments).toLocaleString('es-ES')}€</div>
+                                </div>
+                            ))}
                         </div>
-                    ))}
+                    </div>
                 </div>
             )}
 
-            {/* Net Worth Chart */}
-            <div className="pt-2">
-                <h3 className="font-semibold text-slate-800 mb-4">Evolución (Compartida)</h3>
-                <Card className="p-4 h-[250px] w-full">
-                    <ResponsiveContainer width="100%" height="100%">
-                        <AreaChart data={netWorthHistory} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
-                            <defs>
-                                <linearGradient id="colorTotal" x1="0" y1="0" x2="0" y2="1">
-                                    <stop offset="5%" stopColor="#10b981" stopOpacity={0.3} />
-                                    <stop offset="95%" stopColor="#10b981" stopOpacity={0} />
-                                </linearGradient>
-                            </defs>
-                            <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#64748b' }} />
-                            <YAxis hide domain={['dataMin - 1000', 'dataMax + 1000']} />
-                            <Tooltip
-                                contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
-                                formatter={(value: number) => [`${value} €`, 'Patrimonio Total']}
+            {/* Salary */}
+            <div className="mt-4 pt-4 flex items-center justify-between border-t border-slate-200">
+                <div>
+                    <span className="opacity-70 text-xs block font-medium mb-1">Sueldo Neto Recurrente</span>
+                    {isEditingSalary ? (
+                        <div className="flex gap-2 items-center">
+                            <input
+                                type="number" value={newSalary} onChange={e => setNewSalary(e.target.value)}
+                                className="w-24 bg-slate-50 text-slate-800 text-sm px-2 py-1.5 rounded border border-slate-300"
+                                autoFocus
                             />
-                            <Area type="monotone" dataKey="total" stroke="#10b981" strokeWidth={3} fillOpacity={1} fill="url(#colorTotal)" />
-                        </AreaChart>
-                    </ResponsiveContainer>
-                </Card>
+                            <button onClick={handleUpdateSalary} className="text-white bg-slate-800 px-3 py-1.5 rounded text-xs font-bold">
+                                {isUpdatingSalary ? "..." : "OK"}
+                            </button>
+                        </div>
+                    ) : (
+                        <div className="flex items-center gap-2 group">
+                            <span className="font-semibold text-lg text-slate-800">{(wealth?.salary || 0).toLocaleString('es-ES')} €</span>
+                            <button onClick={() => setIsEditingSalary(true)} className="p-1 hover:bg-slate-100 rounded text-slate-400 transition-colors">
+                                <Edit2 size={12} />
+                            </button>
+                        </div>
+                    )}
+                </div>
+            </div>
+
+            {/* Bank Accounts Breakdown */}
+            <div className="pt-4 border-t border-slate-200">
+                <div className="flex justify-between items-center mb-4">
+                    <h3 className="font-semibold text-slate-800 flex items-center gap-2">
+                        <Landmark size={18} className="text-slate-500" /> Cuentas Bancarias
+                    </h3>
+                    <button onClick={() => setIsAddingAcc(!isAddingAcc)} className="bg-slate-100 text-slate-600 hover:bg-slate-200 p-2 rounded-full transition-colors">
+                        <Plus size={16} />
+                    </button>
+                </div>
+
+                {isAddingAcc && (
+                    <Card className="p-4 mb-4 border-blue-100 bg-blue-50/50">
+                        <h4 className="text-sm font-semibold text-blue-800 mb-3">Añadir Cuenta</h4>
+                        <div className="flex gap-2 mb-3">
+                            <input type="text" placeholder="Banco (ej. Santander)" value={accName} onChange={e => setAccName(e.target.value)} className="w-2/3 text-sm p-2 rounded-lg border border-blue-200" />
+                            <input type="number" placeholder="Importe €" value={accBalance} onChange={e => setAccBalance(e.target.value)} className="w-1/3 text-sm p-2 rounded-lg border border-blue-200" />
+                        </div>
+                        <div className="flex gap-2">
+                            <button onClick={() => setIsAddingAcc(false)} className="flex-1 py-1.5 text-xs text-slate-500 bg-white rounded-lg border border-slate-200">Cancelar</button>
+                            <button onClick={handleAddAccount} disabled={!accName || !accBalance} className="flex-1 py-1.5 text-xs font-bold text-white bg-blue-600 rounded-lg disabled:opacity-50">Guardar</button>
+                        </div>
+                    </Card>
+                )}
+
+                <div className="space-y-3">
+                    {accounts.map(acc => (
+                        <Card key={acc.id} className="p-3 shadow-sm border-slate-100">
+                            {editingAccId === acc.id ? (
+                                <div className="space-y-2">
+                                    <div className="flex gap-2">
+                                        <input type="text" value={editAccName} onChange={e => setEditAccName(e.target.value)} className="w-2/3 text-sm p-1.5 rounded border border-slate-300" />
+                                        <input type="number" value={editAccBalance} onChange={e => setEditAccBalance(e.target.value)} className="w-1/3 text-sm p-1.5 rounded border border-slate-300" />
+                                    </div>
+                                    <div className="flex gap-2">
+                                        <button onClick={handleUpdateAccount} className="flex-1 py-1 text-xs font-bold text-white bg-blue-600 rounded">OK</button>
+                                        <button onClick={() => setEditingAccId(null)} className="flex-1 py-1 text-xs text-slate-500 bg-slate-100 rounded">X</button>
+                                    </div>
+                                </div>
+                            ) : (
+                                <div className="flex justify-between items-center group">
+                                    <div>
+                                        <h4 className="font-medium text-slate-800 text-sm">{acc.name}</h4>
+                                    </div>
+                                    <div className="flex items-center gap-3">
+                                        <span className="font-semibold text-slate-800">{acc.balance.toLocaleString('es-ES')} €</span>
+                                        <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                            <button onClick={() => startEditingAccount(acc)} className="p-1 text-slate-400 hover:text-blue-500"><Edit2 size={12} /></button>
+                                            <button onClick={() => handleDeleteAccount(acc.id)} className="p-1 text-slate-400 hover:text-red-500"><Trash2 size={12} /></button>
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+                        </Card>
+                    ))}
+                    {accounts.length === 0 && (
+                        <div className="text-center p-4 bg-slate-50 rounded-xl border border-dashed border-slate-200 text-slate-400 text-sm">
+                            No tienes cuentas añadidas. Suma tus saldos aquí.
+                        </div>
+                    )}
+                </div>
             </div>
 
             {/* Investments Breakdown */}
-            <div className="pt-4">
+            <div className="pt-6">
                 <div className="flex justify-between items-center mb-4">
                     <h3 className="font-semibold text-slate-800 flex items-center gap-2">
-                        <Wallet size={18} className="text-slate-500" />
-                        Tus Inversiones
+                        <Wallet size={18} className="text-slate-500" /> Tus Inversiones
                     </h3>
-                    <button
-                        onClick={() => setIsAddingInv(!isAddingInv)}
-                        className="bg-slate-100 text-slate-600 hover:bg-slate-200 p-2 rounded-full transition-colors"
-                    >
+                    <button onClick={() => setIsAddingInv(!isAddingInv)} className="bg-slate-100 text-slate-600 hover:bg-slate-200 p-2 rounded-full transition-colors">
                         <Plus size={16} />
                     </button>
                 </div>
 
                 {isAddingInv && (
-                    <Card className="p-4 mb-4 border-emerald-100 bg-emerald-50/50 animate-in fade-in slide-in-from-top-2">
+                    <Card className="p-4 mb-4 border-emerald-100 bg-emerald-50/50">
                         <h4 className="text-sm font-semibold text-emerald-800 mb-3">Añadir Activo</h4>
                         <div className="space-y-3">
-                            <input
-                                type="text" placeholder="Nombre (ej. S&P 500)"
-                                value={invName} onChange={e => setInvName(e.target.value)}
-                                className="w-full text-sm p-2 rounded-lg border border-emerald-200 outline-none focus:ring-2 ring-emerald-400"
-                            />
+                            <input type="text" placeholder="Nombre (ej. Indexado S&P 500)" value={invName} onChange={e => setInvName(e.target.value)} className="w-full text-sm p-2 rounded-lg border border-emerald-200" />
                             <div className="flex gap-2">
-                                <input
-                                    type="number" placeholder="Importe €"
-                                    value={invAmount} onChange={e => setInvAmount(e.target.value)}
-                                    className="w-1/2 text-sm p-2 rounded-lg border border-emerald-200 outline-none focus:ring-2 ring-emerald-400"
-                                />
-                                <select
-                                    value={invCategory}
-                                    onChange={e => setInvCategory(e.target.value as any)}
-                                    className="w-1/2 text-sm p-2 rounded-lg border border-emerald-200 outline-none focus:ring-2 ring-emerald-400 bg-white"
-                                >
+                                <input type="number" placeholder="Importe €" value={invAmount} onChange={e => setInvAmount(e.target.value)} className="w-1/2 text-sm p-2 rounded-lg border border-emerald-200" />
+                                <select value={invCategory} onChange={e => setInvCategory(e.target.value as any)} className="w-1/2 text-sm p-2 rounded-lg border border-emerald-200 bg-white">
                                     <option value="RV">Renta Variable</option>
                                     <option value="Monetario">F. Monetario</option>
                                     <option value="Deposito">Depósito</option>
                                 </select>
                             </div>
-
                             {invCategory === "Deposito" && (
                                 <div className="flex gap-2">
-                                    <input
-                                        type="number" placeholder="% TAE"
-                                        value={invApy} onChange={e => setInvApy(e.target.value)}
-                                        className="w-1/3 text-sm p-2 rounded-lg border border-emerald-200 outline-none"
-                                    />
-                                    <input
-                                        type="date"
-                                        value={invMaturity} onChange={e => setInvMaturity(e.target.value)}
-                                        className="w-2/3 text-sm p-2 rounded-lg border border-emerald-200 outline-none"
-                                    />
+                                    <input type="number" placeholder="% TAE" value={invApy} onChange={e => setInvApy(e.target.value)} className="w-1/3 text-sm p-2 rounded-lg border border-emerald-200" />
+                                    <input type="date" value={invMaturity} onChange={e => setInvMaturity(e.target.value)} className="w-2/3 text-sm p-2 rounded-lg border border-emerald-200" />
                                 </div>
                             )}
-
                             <div className="flex gap-2 pt-2">
-                                <button
-                                    onClick={() => setIsAddingInv(false)}
-                                    className="flex-1 py-2 text-sm font-medium text-slate-500 bg-slate-100 rounded-lg"
-                                >Cancelar</button>
-                                <button
-                                    onClick={handleAddInvestment}
-                                    disabled={!invName || !invAmount || isSubmittingInv}
-                                    className="flex-1 py-2 text-sm font-bold text-white bg-emerald-600 rounded-lg hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                                >{isSubmittingInv ? "Guardando..." : "Guardar"}</button>
+                                <button onClick={() => setIsAddingInv(false)} className="flex-1 py-1.5 text-xs text-slate-500 bg-white rounded-lg border border-slate-200">Cancelar</button>
+                                <button onClick={handleAddInvestment} disabled={!invName || !invAmount || isSubmittingInv} className="flex-1 py-1.5 text-xs font-bold text-white bg-emerald-600 rounded-lg disabled:opacity-50">Guardar</button>
                             </div>
                         </div>
                     </Card>
@@ -392,107 +456,49 @@ export default function WealthPage() {
 
                 <div className="space-y-3">
                     {investments.map(inv => (
-                        <Card key={inv.id} className="p-4 hover:shadow-md transition-shadow">
+                        <Card key={inv.id} className="p-3 shadow-sm border-slate-100">
                             {editingInvId === inv.id ? (
-                                <div className="space-y-3 animate-in fade-in slide-in-from-top-1">
-                                    <input
-                                        type="text" placeholder="Nombre"
-                                        value={editInvName} onChange={e => setEditInvName(e.target.value)}
-                                        className="w-full text-sm p-2 rounded-lg border border-emerald-200 outline-none focus:ring-2 ring-emerald-400"
-                                        autoFocus
-                                    />
+                                <div className="space-y-2">
+                                    <input type="text" value={editInvName} onChange={e => setEditInvName(e.target.value)} className="w-full text-sm p-1.5 rounded border border-slate-300" />
                                     <div className="flex gap-2">
-                                        <input
-                                            type="number" placeholder="Importe"
-                                            value={editInvAmount} onChange={e => setEditInvAmount(e.target.value)}
-                                            className="w-1/2 text-sm p-2 rounded-lg border border-emerald-200 outline-none focus:ring-2 ring-emerald-400"
-                                        />
-                                        <select
-                                            value={editInvCategory}
-                                            onChange={e => setEditInvCategory(e.target.value as any)}
-                                            className="w-1/2 text-sm p-2 rounded-lg border border-emerald-200 outline-none focus:ring-2 ring-emerald-400 bg-white"
-                                        >
+                                        <input type="number" value={editInvAmount} onChange={e => setEditInvAmount(e.target.value)} className="w-1/2 text-sm p-1.5 rounded border border-slate-300" />
+                                        <select value={editInvCategory} onChange={e => setEditInvCategory(e.target.value as any)} className="w-1/2 text-sm p-1.5 rounded border border-slate-300">
                                             <option value="RV">Renta Variable</option>
                                             <option value="Monetario">F. Monetario</option>
                                             <option value="Deposito">Depósito</option>
                                         </select>
                                     </div>
-
-                                    {(editInvCategory === "Deposito") && (
-                                        <div className="flex gap-2">
-                                            <input
-                                                type="number" placeholder="TAE"
-                                                value={editInvApy} onChange={e => setEditInvApy(e.target.value)}
-                                                className="w-1/3 text-sm p-2 rounded-lg border border-emerald-200 outline-none"
-                                            />
-                                            <input
-                                                type="date"
-                                                value={editInvMaturity} onChange={e => setEditInvMaturity(e.target.value)}
-                                                className="w-2/3 text-sm p-2 rounded-lg border border-emerald-200 outline-none"
-                                            />
-                                        </div>
-                                    )}
-
-                                    <div className="flex gap-2 pt-1">
-                                        <button
-                                            onClick={() => setEditingInvId(null)}
-                                            className="flex-1 py-1.5 text-xs font-medium text-slate-500 bg-slate-100 rounded-lg"
-                                        >Cancelar</button>
-                                        <button
-                                            onClick={handleUpdateInvestment}
-                                            disabled={isUpdatingInv}
-                                            className="flex-1 py-1.5 text-xs font-bold text-white bg-emerald-600 rounded-lg"
-                                        >
-                                            {isUpdatingInv ? "..." : "Guardar"}
-                                        </button>
+                                    <div className="flex gap-2">
+                                        <button onClick={handleUpdateInvestment} disabled={isUpdatingInv} className="flex-1 py-1 text-xs font-bold text-white bg-emerald-600 rounded">OK</button>
+                                        <button onClick={() => setEditingInvId(null)} className="flex-1 py-1 text-xs text-slate-500 bg-slate-100 rounded">X</button>
                                     </div>
                                 </div>
                             ) : (
-                                <>
-                                    <div className="flex justify-between items-start mb-2">
-                                        <div>
-                                            <h4 className="font-medium text-slate-800 flex items-center gap-2">
-                                                {inv.name}
-                                                {inv.category === "RV" && <ArrowUpRight size={14} className="text-accent" />}
-                                            </h4>
-                                            <p className="text-xs font-medium text-slate-500 uppercase tracking-wider">{inv.category}</p>
-                                        </div>
-                                        <p className="font-semibold text-slate-800">{inv.amount.toLocaleString('es-ES')} €</p>
+                                <div className="flex justify-between items-center group">
+                                    <div>
+                                        <h4 className="font-medium text-slate-800 text-sm flex items-center gap-1">
+                                            {inv.name} {inv.category === "RV" && <ArrowUpRight size={10} className="text-emerald-500" />}
+                                        </h4>
+                                        <p className="text-[10px] text-slate-400 mt-0.5">{inv.category}</p>
                                     </div>
-
-                                    {inv.maturityDate && (
-                                        <div className="mt-3 pt-3 border-t border-slate-100 flex justify-between items-center text-xs">
-                                            <span className="flex items-center gap-1 text-slate-500">
-                                                <Clock size={12} />
-                                                Vence: {new Date(inv.maturityDate).toLocaleDateString()}
-                                            </span>
-                                            {inv.apy && (
-                                                <span className="font-medium text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full">
-                                                    {inv.apy}% TAE
-                                                </span>
-                                            )}
+                                    <div className="flex flex-col items-end gap-1">
+                                        <span className="font-semibold text-slate-800">{inv.amount.toLocaleString('es-ES')} €</span>
+                                        <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                            <button onClick={() => {
+                                                setEditingInvId(inv.id); setEditInvName(inv.name); setEditInvAmount(inv.amount.toString()); setEditInvCategory(inv.category); setEditInvApy(inv.apy?.toString() || ""); setEditInvMaturity(inv.maturityDate || "");
+                                            }} className="p-1 px-1.5 text-xs text-slate-400 hover:bg-slate-100 rounded"><Edit2 size={12} /></button>
+                                            <button onClick={() => handleDeleteInvestment(inv.id)} disabled={isDeletingInv === inv.id} className="p-1 px-1.5 text-xs text-slate-400 hover:bg-red-50 hover:text-red-500 rounded"><Trash2 size={12} /></button>
                                         </div>
-                                    )}
-
-                                    <div className="mt-3 flex gap-2 justify-end">
-                                        <button
-                                            onClick={() => startEditing(inv)}
-                                            className="p-1 px-2 text-[10px] font-bold text-slate-400 hover:text-slate-600 border border-slate-100 rounded flex items-center gap-1"
-                                        >
-                                            <Edit2 size={10} /> Editar
-                                        </button>
-                                        <button
-                                            disabled={isDeletingInv === inv.id}
-                                            onClick={() => handleDeleteInvestment(inv.id)}
-                                            className="p-1 px-2 text-[10px] font-bold text-slate-400 hover:text-red-500 border border-slate-100 rounded flex items-center gap-1"
-                                        >
-                                            <Trash2 size={10} /> {isDeletingInv === inv.id ? "..." : "Borrar"}
-                                        </button>
                                     </div>
-                                </>
+                                </div>
                             )}
                         </Card>
                     ))}
+                    {investments.length === 0 && (
+                        <div className="text-center p-4 bg-slate-50 rounded-xl border border-dashed border-slate-200 text-slate-400 text-sm">
+                            No tienes inversiones añadidas.
+                        </div>
+                    )}
                 </div>
             </div>
         </div>

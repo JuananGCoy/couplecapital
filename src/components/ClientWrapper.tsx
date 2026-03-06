@@ -9,7 +9,7 @@ import { AddTransactionModal } from "@/components/AddTransactionModal";
 
 export function ClientWrapper({ children }: { children: React.ReactNode }) {
     const [isMounted, setIsMounted] = useState(false);
-    const setSession = useStore(state => state.setSession);
+    const setUser = useStore(state => state.setUser);
     const supabase = createClient();
 
     useEffect(() => {
@@ -17,18 +17,18 @@ export function ClientWrapper({ children }: { children: React.ReactNode }) {
 
         // Fetch initial session
         supabase.auth.getSession().then(({ data: { session } }) => {
-            setSession(session);
+            setUser(session?.user || null);
         });
 
         // Listen for changes
         const {
             data: { subscription },
         } = supabase.auth.onAuthStateChange((_event, session) => {
-            setSession(session);
+            setUser(session?.user || null);
         });
 
         return () => subscription.unsubscribe();
-    }, [setSession, supabase.auth]);
+    }, [setUser, supabase.auth]);
 
     const household = useStore(state => state.household);
 

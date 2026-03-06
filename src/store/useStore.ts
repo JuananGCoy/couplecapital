@@ -42,6 +42,22 @@ export interface Goal {
     imageUrl?: string;
 }
 
+export interface BankAccount {
+    id: string;
+    name: string;
+    balance: number;
+    is_primary?: boolean;
+    payroll?: number;
+}
+
+export interface WealthSnapshot {
+    id: string;
+    recordingDate: string;
+    totalLiquidity: number;
+    totalInvestments: number;
+    savingsVsPrevious: number;
+}
+
 export interface UserState {
     id: string; // Real auth.uid
     salary: number;
@@ -80,14 +96,14 @@ export interface AppState {
         liquidity: number;
     };
     investments: Investment[];
+    accounts: BankAccount[]; // New
+    history: WealthSnapshot[]; // New
 
     // Household Financial Data
     transactions: Transaction[];
     netWorthHistory: NetWorthDataPoint[];
     subscriptions: Subscription[];
     goals: Goal[];
-    addTransaction: (t: Transaction) => void;
-    deleteTransaction: (id: string) => void;
 
     // UI State
     isAddTxModalOpen: boolean;
@@ -99,28 +115,37 @@ export interface AppState {
     updateSalary: (amount: number) => void;
     addInvestment: (investment: Investment) => void;
     deleteInvestment: (id: string) => void;
-    updateInvestment: (investment: Investment) => void;
+    updateInvestment: (id: string, updates: Partial<Investment>) => void; // Modified signature
+
+    addAccount: (a: BankAccount) => void; // New
+    deleteAccount: (id: string) => void; // New
+    updateAccount: (id: string, updates: Partial<BankAccount>) => void; // New
 
     // Pro Features (Goals & Subs)
-    addSubscription: (sub: Subscription) => void;
+    addSubscription: (s: Subscription) => void; // Modified signature
     deleteSubscription: (id: string) => void;
-    addGoal: (goal: Goal) => void;
+    addGoal: (g: Goal) => void; // Modified signature
     updateGoalProgress: (id: string, amountToAdd: number) => void;
     deleteGoal: (id: string) => void;
+
+    addTransaction: (t: Transaction) => void; // Moved and modified signature
+    deleteTransaction: (id: string) => void;
 
     settleDebt: () => void;
     getDebtBalance: () => { amount: number; whoOwes: string | null };
     getExpiringAssets: () => Investment[];
 
     // Supabase Sync Actions
-    setSession: (session: any) => void;
+    setUser: (user: any | null) => void; // Uses Supabase Auth User type
     setHousehold: (household: Household | null) => void;
     setMembers: (members: AppUser[]) => void;
-    setWealth: (wealth: { salary: number, liquidity: number }) => void;
-    setInvestments: (investments: Investment[]) => void;
-    setTransactions: (txs: Transaction[]) => void;
-    setSubscriptions: (subs: Subscription[]) => void;
-    setGoals: (goals: Goal[]) => void;
+    setWealth: (w: { salary: number, liquidity: number }) => void; // Modified parameter name
+    setInvestments: (i: Investment[]) => void; // Modified parameter name
+    setTransactions: (t: Transaction[]) => void; // Modified parameter name
+    setSubscriptions: (s: Subscription[]) => void; // Modified parameter name
+    setGoals: (g: Goal[]) => void; // Modified parameter name
+    setAccounts: (a: BankAccount[]) => void; // New
+    setHistory: (h: WealthSnapshot[]) => void; // New
     signOut: () => Promise<void>;
 }
 
@@ -142,17 +167,19 @@ export const useStore = create<AppState>()(
             transactions: [],
             subscriptions: [],
             goals: [],
+            accounts: [], // New
+            history: [], // New
             netWorthHistory: [],
             isAddTxModalOpen: false,
 
-            setSession: (session) => {
-                if (!session) {
+            setUser: (user) => { // Modified from setSession
+                if (!user) {
                     set({ session: null, user: null, household: null, members: [] });
                     return;
                 }
-                const user = session.user;
+                // Assuming `user` here is the Supabase `User` object
                 set({
-                    session,
+                    session: get().session, // Keep existing session if available, or set to null if user is null
                     user: {
                         id: user.id,
                         email: user.email,
@@ -169,6 +196,8 @@ export const useStore = create<AppState>()(
             setTransactions: (transactions) => set({ transactions }),
             setSubscriptions: (subscriptions) => set({ subscriptions }),
             setGoals: (goals) => set({ goals }),
+            setAccounts: (accounts) => set({ accounts }), // New
+            setHistory: (history) => set({ history }), // New
 
             signOut: async () => {
                 const { createClient } = await import("@/lib/supabase");
@@ -195,13 +224,19 @@ export const useStore = create<AppState>()(
             deleteInvestment: (id) => set((state) => ({
                 investments: state.investments.filter(inv => inv.id !== id)
             })),
-            updateInvestment: (investment) => set((state) => ({
-                investments: state.investments.map(inv => inv.id === investment.id ? investment : inv)
+            updateInvestment: (id, updates) => set((state) => ({ // Modified signature
+                investments: state.investments.map(inv => inv.id === id ? { ...inv, ...updates } : inv)
+            })),
+
+            addAccount: (a) => set((state) => ({ accounts: [...state.accounts, a] })), // New
+            deleteAccount: (id) => set((state) => ({ accounts: state.accounts.filter(acc => acc.id !== id) })), // New
+            updateAccount: (id, updates) => set((state) => ({ // New
+                accounts: state.accounts.map(acc => acc.id === id ? { ...acc, ...updates } : acc)
             })),
 
             // --- Pro Features Actions ---
-            addSubscription: (sub) => set((state) => ({
-                subscriptions: [...state.subscriptions, sub]
+            addSubscription: (s) => set((state) => ({ // Modified signature
+                subscriptions: [...state.subscriptions, s]
             })),
 
             deleteSubscription: (id) => set((state) => ({
