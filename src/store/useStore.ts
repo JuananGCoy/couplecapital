@@ -42,12 +42,20 @@ export interface Goal {
     imageUrl?: string;
 }
 
+export interface Income {
+    id: string;
+    user_id: string;
+    account_id: string | null;
+    amount: number;
+    description: string;
+    date: string;
+}
+
 export interface BankAccount {
     id: string;
     name: string;
     balance: number;
     is_primary?: boolean;
-    payroll?: number;
     is_shared?: boolean;
     household_id?: string;
 }
@@ -124,6 +132,7 @@ export interface AppState {
     investments: Investment[];
     accounts: BankAccount[]; // New
     history: WealthSnapshot[]; // New
+    incomes: Income[]; // New
 
     // Household Financial Data
     transactions: Transaction[];
@@ -150,6 +159,10 @@ export interface AppState {
     addAccount: (a: BankAccount) => void; // New
     deleteAccount: (id: string) => void; // New
     updateAccount: (id: string, updates: Partial<BankAccount>) => void; // New
+
+    setIncomes: (incomes: Income[]) => void;
+    addIncome: (income: Income) => void;
+    deleteIncome: (id: string) => void;
 
     // Pro Features (Goals & Subs)
     addSubscription: (s: Subscription) => void; // Modified signature
@@ -179,8 +192,19 @@ export interface AppState {
 
     // Home Hub Actions
     setShoppingItems: (items: ShoppingItem[]) => void;
+    addShoppingItem: (item: ShoppingItem) => void;
+    updateShoppingItem: (id: string, updates: Partial<ShoppingItem>) => void;
+    deleteShoppingItem: (id: string) => void;
+
     setTasks: (tasks: HouseholdTask[]) => void;
+    addTask: (task: HouseholdTask) => void;
+    updateTask: (id: string, updates: Partial<HouseholdTask>) => void;
+    deleteTask: (id: string) => void;
+
     setMeals: (meals: WeeklyMeal[]) => void;
+    addMeal: (meal: WeeklyMeal) => void;
+    updateMeal: (id: string, updates: Partial<WeeklyMeal>) => void;
+    deleteMeal: (id: string) => void;
 
     signOut: () => Promise<void>;
 }
@@ -204,11 +228,18 @@ export const useStore = create<AppState>()(
             goals: [],
             accounts: [], // New
             history: [], // New
+            incomes: [], // New
             shoppingItems: [],
             tasks: [],
             meals: [],
             netWorthHistory: [],
             isAddTxModalOpen: false,
+
+            setIncomes: (incomes) => set({ incomes }),
+            addIncome: (income) => set((state) => ({ incomes: [income, ...state.incomes] })),
+            deleteIncome: (id) => set((state) => ({
+                incomes: state.incomes.filter(i => i.id !== id)
+            })),
 
             setUser: (user) => { // Modified from setSession
                 if (!user) {
@@ -236,6 +267,34 @@ export const useStore = create<AppState>()(
             setGoals: (goals) => set({ goals }),
             setAccounts: (accounts) => set({ accounts }), // New
             setHistory: (history) => set({ history }), // New
+
+            // Home Hub Reducers
+            setShoppingItems: (shoppingItems) => set({ shoppingItems }),
+            addShoppingItem: (item) => set((state) => ({ shoppingItems: [item, ...state.shoppingItems] })),
+            updateShoppingItem: (id, updates) => set((state) => ({
+                shoppingItems: state.shoppingItems.map(i => i.id === id ? { ...i, ...updates } : i)
+            })),
+            deleteShoppingItem: (id) => set((state) => ({
+                shoppingItems: state.shoppingItems.filter(i => i.id !== id)
+            })),
+
+            setTasks: (tasks) => set({ tasks }),
+            addTask: (task) => set((state) => ({ tasks: [task, ...state.tasks] })),
+            updateTask: (id, updates) => set((state) => ({
+                tasks: state.tasks.map(t => t.id === id ? { ...t, ...updates } : t)
+            })),
+            deleteTask: (id) => set((state) => ({
+                tasks: state.tasks.filter(t => t.id !== id)
+            })),
+
+            setMeals: (meals) => set({ meals }),
+            addMeal: (meal) => set((state) => ({ meals: [...state.meals, meal] })),
+            updateMeal: (id, updates) => set((state) => ({
+                meals: state.meals.map(m => m.id === id ? { ...m, ...updates } : m)
+            })),
+            deleteMeal: (id) => set((state) => ({
+                meals: state.meals.filter(m => m.id !== id)
+            })),
 
             signOut: async () => {
                 const { createClient } = await import("@/lib/supabase");

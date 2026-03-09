@@ -7,12 +7,20 @@ import { NetWorthChart } from "@/components/NetWorthChart";
 import { SharedDebtsWidget } from "@/components/SharedDebtsWidget";
 import { Onboarding } from "@/components/Onboarding";
 import { ExpensesChart } from "@/components/ExpensesChart";
-import { LogOut, Wallet, PiggyBank, Receipt, Users, TrendingUp, AlertCircle, CheckCircle2 } from "lucide-react";
+import { SettingsMenu } from "@/components/SettingsMenu";
+import { Wallet, PiggyBank, Receipt, Users, TrendingUp, AlertCircle, CheckCircle2 } from "lucide-react";
 
 export default function Home() {
-    const { household, user: authUser, members, wealth, accounts, signOut, transactions } = useStore();
+    const { household, user: authUser, members, wealth, accounts, incomes, signOut, transactions } = useStore();
     const [view, setView] = useState<"private" | "shared">("private");
-    const payroll = accounts.reduce((sum, acc) => acc.is_primary ? sum + (acc.payroll || 0) : sum, 0);
+
+    // Calculate current month's income from the dynamic history
+    const now = new Date();
+    const currentMonthIncomes = incomes.filter(inc => {
+        const incDate = new Date(inc.date);
+        return incDate.getMonth() === now.getMonth() && incDate.getFullYear() === now.getFullYear();
+    });
+    const payroll = currentMonthIncomes.reduce((sum, inc) => sum + inc.amount, 0);
 
     if (!authUser) return null; // Esperando auth
 
@@ -31,7 +39,6 @@ export default function Home() {
     const totalSharedExpenses = sharedTxs.reduce((acc, curr) => acc + curr.amount, 0);
 
     // Current Month calculations
-    const now = new Date();
     const currentMonthTxs = personalTxs.filter(t => {
         const txDate = new Date(t.date);
         return txDate.getMonth() === now.getMonth() && txDate.getFullYear() === now.getFullYear();
@@ -72,13 +79,7 @@ export default function Home() {
                     <p className="text-sm text-slate-500 font-medium">{household.name}</p>
                 </div>
                 <div className="flex gap-2">
-                    <button
-                        onClick={() => signOut()}
-                        className="p-2.5 rounded-xl bg-slate-100 text-slate-600 hover:bg-slate-200 transition-all shadow-sm"
-                        title="Cerrar sesión"
-                    >
-                        <LogOut size={18} />
-                    </button>
+                    <SettingsMenu onSignOut={signOut} />
                     {/* El botón de Switch User ya no aplica en este flujo real de autolocalización, pero mantenemos una tarjeta de visualización opcional o simplemente lo quitamos */}
                 </div>
             </div>

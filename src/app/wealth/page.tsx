@@ -4,17 +4,20 @@ import { useStore } from "@/store/useStore";
 import { Card } from "@/components/ui/Card";
 import { TrendingUp, Wallet, ArrowUpRight, Clock, AlertTriangle, Plus, Edit2, Trash2, Landmark, History, Save } from "lucide-react";
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar, Cell } from "recharts";
-import { useState } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { Investment, BankAccount, WealthSnapshot } from "@/store/useStore";
 import { createClient } from "@/lib/supabase";
 
 export default function WealthPage() {
     const {
-        user, household, wealth, investments, history, accounts,
+        user, household, wealth, investments, history, accounts, incomes,
         getExpiringAssets, updateLiquidity,
         addInvestment, deleteInvestment, updateInvestment,
-        addAccount, updateAccount, deleteAccount, setHistory
+        addAccount, updateAccount, deleteAccount, setHistory,
+        addIncome, deleteIncome
     } = useStore();
+
+
 
     const expiringAssets = getExpiringAssets();
     const supabase = createClient();
@@ -28,11 +31,16 @@ export default function WealthPage() {
     const [editAccBalance, setEditAccBalance] = useState("");
 
     const [accIsPrimary, setAccIsPrimary] = useState(false);
-    const [accPayroll, setAccPayroll] = useState("");
     const [accIsShared, setAccIsShared] = useState(false);
     const [editAccIsPrimary, setEditAccIsPrimary] = useState(false);
-    const [editAccPayroll, setEditAccPayroll] = useState("");
     const [editAccIsShared, setEditAccIsShared] = useState(false);
+
+    // Income State
+    const [isAddingInc, setIsAddingInc] = useState(false);
+    const [incAmount, setIncAmount] = useState("");
+    const [incDesc, setIncDesc] = useState("");
+    const [incAccId, setIncAccId] = useState("");
+    const [isSubmittingInc, setIsSubmittingInc] = useState(false);
 
     // Transfer State
     const [isTransferring, setIsTransferring] = useState(false);
@@ -77,7 +85,6 @@ export default function WealthPage() {
             name: accName,
             balance: Number(accBalance),
             is_primary: accIsPrimary,
-            payroll: Number(accPayroll) || 0,
             is_shared: accIsShared,
             household_id: accIsShared && household ? household.id : undefined
         };
@@ -96,12 +103,85 @@ export default function WealthPage() {
                 name: data.name,
                 balance: Number(data.balance),
                 is_primary: data.is_primary,
-                payroll: Number(data.payroll),
                 is_shared: data.is_shared,
                 household_id: data.household_id
             });
             setIsAddingAcc(false);
-            setAccName(""); setAccBalance(""); setAccIsPrimary(false); setAccPayroll(""); setAccIsShared(false);
+            setAccName(""); setAccBalance(""); setAccIsPrimary(false); setAccIsShared(false);
+        }
+    };
+
+    const handleAddIncome = async () => {
+        if (!user || !incAmount || !incDesc || !incAccId) return;
+        setIsSubmittingInc(true);
+
+        const amount = Number(incAmount);
+        const selectedAcc = accounts.find(a => a.id === incAccId);
+        if (!selectedAcc) return;
+
+        // 1. Insert into incomes history
+        const { data: incomeData, error: incomeError } = await supabase
+            .from("incomes")
+            .insert({
+                user_id: user.id,
+                account_id: incAccId,
+                amount: amount,
+                description: incDesc,
+                date: new Date().toISOString()
+            })
+            .select()
+            .single();
+
+        if (!incomeError && incomeData) {
+            // 2. Update Account Balance
+            const newAccBalance = selectedAcc.balance + amount;
+            await supabase.from("accounts").update({ balance: newAccBalance }).eq("id", incAccId);
+            updateAccount(incAccId, { balance: newAccBalance });
+
+            // 3. Update theoretical liquidity
+            const newLiquidity = (wealth?.liquidity || 0) + amount;
+            await supabase.from("wealth").update({ liquidity: newLiquidity }).eq("user_id", user.id);
+            updateLiquidity(newLiquidity);
+
+            // 4. Update local state
+            addIncome({
+                id: incomeData.id,
+                user_id: incomeData.user_id,
+                account_id: incomeData.account_id,
+                amount: Number(incomeData.amount),
+                description: incomeData.description,
+                date: incomeData.date
+            });
+
+            // Reset form
+            setIsAddingInc(false);
+            setIncAmount("");
+            setIncDesc("");
+            setIncAccId("");
+        }
+        setIsSubmittingInc(false);
+    };
+
+    const handleDeleteIncome = async (incomeId: string) => {
+        const income = incomes.find(i => i.id === incomeId);
+        if (!income || !user) return;
+
+        const { error } = await supabase.from("incomes").delete().eq("id", incomeId);
+        if (!error) {
+            // Revert balance change in account
+            const acc = accounts.find(a => a.id === income.account_id);
+            if (acc) {
+                const newBalance = acc.balance - income.amount;
+                await supabase.from("accounts").update({ balance: newBalance }).eq("id", acc.id);
+                updateAccount(acc.id, { balance: newBalance });
+            }
+
+            // Revert theoretical liquidity
+            const newLiquidity = (wealth?.liquidity || 0) - income.amount;
+            await supabase.from("wealth").update({ liquidity: newLiquidity }).eq("user_id", user.id);
+            updateLiquidity(newLiquidity);
+
+            deleteIncome(incomeId);
         }
     };
 
@@ -110,7 +190,6 @@ export default function WealthPage() {
         setEditAccName(acc.name);
         setEditAccBalance(acc.balance.toString());
         setEditAccIsPrimary(acc.is_primary || false);
-        setEditAccPayroll(acc.payroll?.toString() || "");
         setEditAccIsShared(acc.is_shared || false);
     };
 
@@ -121,7 +200,6 @@ export default function WealthPage() {
             name: editAccName,
             balance: Number(editAccBalance),
             is_primary: editAccIsPrimary,
-            payroll: Number(editAccPayroll) || 0,
             is_shared: editAccIsShared,
             household_id: editAccIsShared && household ? household.id : undefined
         };
@@ -184,24 +262,23 @@ export default function WealthPage() {
         }
     };
 
-    // Month Closing Handler
-    const handleCloseMonth = async () => {
+    // Month Closing Handler (Auto-save Logic)
+    const handleCloseMonth = useCallback(async () => {
         if (!user) return;
         setIsClosingMonth(true);
 
         const today = new Date();
-        const firstDayOfMonth = new Date(today.getFullYear(), today.getMonth(), 1).toLocaleDateString('en-CA'); // format: YYYY-MM-DD
+        const firstDayOfMonth = new Date(today.getFullYear(), today.getMonth(), 1).toLocaleDateString('en-CA');
 
-        let previousSavings = 0;
         let savingsVsPrev = 0;
 
-        if (history.length > 0) {
-            // Compare against the most recent snapshot
-            const prev = history[0];
-            const prevTotal = prev.totalLiquidity + prev.totalInvestments;
+        // Correctly find the previous month's snapshot (NOT the current month's one)
+        const previousRecord = history.find(h => h.recordingDate < firstDayOfMonth);
+
+        if (previousRecord) {
+            const prevTotal = previousRecord.totalLiquidity + previousRecord.totalInvestments;
             savingsVsPrev = netWorth - prevTotal;
         } else {
-            // First time closing
             savingsVsPrev = netWorth;
         }
 
@@ -213,7 +290,6 @@ export default function WealthPage() {
             savings_vs_previous: savingsVsPrev
         };
 
-        // UPSERT behavior: if they close the month twice in the same month, we just overwrite
         const { data, error } = await supabase
             .from("wealth_history")
             .upsert(newSnapshot, { onConflict: 'user_id, recording_date' })
@@ -221,10 +297,7 @@ export default function WealthPage() {
             .single();
 
         if (!error && data) {
-            // Sync liquidity automatically so "teórico" matches "real" right after closing month
-            await handleSyncLiquidity();
-
-            // To be safe, just refetch history or manually inject it
+            // Refetch history to keep state in sync
             const { data: latestHistory } = await supabase.from("wealth_history").select("*").eq("user_id", user.id).order("recording_date", { ascending: false });
             if (latestHistory) {
                 setHistory(latestHistory.map(h => ({
@@ -235,11 +308,20 @@ export default function WealthPage() {
                     savingsVsPrevious: Number(h.savings_vs_previous)
                 })));
             }
-        } else {
-            alert("Error al guardar cierre de mes. ¿A lo mejor ya lo guardaste hoy?");
         }
         setIsClosingMonth(false);
-    };
+    }, [user, history, netWorth, totalRealAccounts, totalInvestments, supabase]);
+
+    // Automatic Sync on load or when net worth changes (with 2s debounce to avoid spam during editing)
+    useEffect(() => {
+        if (!user) return;
+
+        const timeoutId = setTimeout(() => {
+            handleCloseMonth();
+        }, 2000);
+
+        return () => clearTimeout(timeoutId);
+    }, [netWorth, user]); // Re-run when netWorth changes
 
     // Other handlers (Investments) mostly unchanged...
     const handleAddInvestment = async () => {
@@ -288,15 +370,7 @@ export default function WealthPage() {
     return (
         <div className="p-6 space-y-6 pb-20">
             <div className="flex justify-between items-center mb-4">
-                <h1 className="text-2xl font-semibold text-slate-800">Tu Patrimonio</h1>
-                <button
-                    onClick={handleCloseMonth}
-                    disabled={isClosingMonth}
-                    className="flex items-center gap-2 bg-emerald-600 text-white px-3 py-1.5 rounded-full text-xs font-medium hover:bg-emerald-700 transition"
-                >
-                    <Save size={14} />
-                    {isClosingMonth ? "Guardando..." : "Cierre de Mes"}
-                </button>
+                <h1 className="text-2xl font-bold text-slate-800">Patrimonio</h1>
             </div>
 
             {/* Net Worth Summary */}
@@ -406,20 +480,6 @@ export default function WealthPage() {
                                     🤝 Compartir recuento de esta cuenta con mi pareja
                                 </label>
                             )}
-
-                            {accIsPrimary && (
-                                <div className="mt-1 p-2 bg-white rounded-lg border border-blue-100 animate-in fade-in slide-in-from-top-1">
-                                    <span className="text-[10px] uppercase font-bold text-blue-500 block mb-1">Configuración de Ingresos</span>
-                                    <input
-                                        type="number"
-                                        placeholder="Importe de tu nómina mensual €"
-                                        value={accPayroll}
-                                        onChange={e => setAccPayroll(e.target.value)}
-                                        className="w-full text-sm p-2 rounded border border-blue-200 focus:ring-1 focus:ring-blue-500 outline-none"
-                                    />
-                                    <p className="text-[10px] text-slate-500 mt-1">Este importe se usará para calcular tu capacidad de ahorro mensual.</p>
-                                </div>
-                            )}
                         </div>
                         <div className="flex gap-2">
                             <button onClick={() => setIsAddingAcc(false)} className="flex-1 py-1.5 text-xs text-slate-500 bg-white rounded-lg border border-slate-200">Cancelar</button>
@@ -447,18 +507,6 @@ export default function WealthPage() {
                                             🤝 Compartida
                                         </label>
                                     )}
-                                    {editAccIsPrimary && (
-                                        <div className="p-2 bg-slate-50 rounded border border-slate-200">
-                                            <span className="text-[10px] uppercase font-bold text-slate-500 block mb-1">Sueldo / Nómina</span>
-                                            <input
-                                                type="number"
-                                                placeholder="Nómina mensual €"
-                                                value={editAccPayroll}
-                                                onChange={e => setEditAccPayroll(e.target.value)}
-                                                className="w-full text-sm p-1.5 rounded border border-slate-300 focus:ring-1 focus:ring-blue-500 outline-none"
-                                            />
-                                        </div>
-                                    )}
                                     <div className="flex gap-2">
                                         <button onClick={handleUpdateAccount} className="flex-1 py-1 text-xs font-bold text-white bg-blue-600 rounded">OK</button>
                                         <button onClick={() => setEditingAccId(null)} className="flex-1 py-1 text-xs text-slate-500 bg-slate-100 rounded">X</button>
@@ -472,9 +520,6 @@ export default function WealthPage() {
                                             {acc.is_primary && <span className="text-[10px] font-bold bg-blue-100 text-blue-600 px-1.5 py-0.5 rounded-sm uppercase">Principal</span>}
                                             {acc.is_shared && <span className="text-[10px] font-bold bg-purple-100 text-purple-600 px-1.5 py-0.5 rounded-sm uppercase">Compartida</span>}
                                         </div>
-                                        {acc.is_primary && acc.payroll ? (
-                                            <span className="text-xs text-slate-400">Nómina: +{acc.payroll}€</span>
-                                        ) : null}
                                     </div>
                                     <div className="flex items-center gap-3">
                                         <span className="font-semibold text-slate-800">{acc.balance.toLocaleString('es-ES')} €</span>
@@ -519,6 +564,89 @@ export default function WealthPage() {
                         </div>
                     </div>
                 )}
+
+                {/* Historial de Ingresos */}
+                <div className="mt-8 pt-6 border-t border-slate-200">
+                    <div className="flex justify-between items-center mb-4">
+                        <h3 className="font-semibold text-slate-800 flex items-center gap-2">
+                            <ArrowUpRight size={18} className="text-emerald-500" /> Registro de Ingresos
+                        </h3>
+                        <button onClick={() => setIsAddingInc(!isAddingInc)} className="bg-emerald-100 text-emerald-600 hover:bg-emerald-200 p-2 rounded-full transition-colors">
+                            <Plus size={16} />
+                        </button>
+                    </div>
+
+                    {isAddingInc && (
+                        <Card className="p-4 mb-4 border-emerald-100 bg-emerald-50/50">
+                            <h4 className="text-sm font-semibold text-emerald-800 mb-3">Registrar Nuevo Ingreso</h4>
+                            <div className="space-y-3">
+                                <input
+                                    type="text"
+                                    placeholder="Descripción (ej. Nómina Marzo, Venta Wallapop)"
+                                    value={incDesc}
+                                    onChange={e => setIncDesc(e.target.value)}
+                                    className="w-full text-sm p-2 rounded-lg border border-emerald-200 focus:ring-1 focus:ring-emerald-500 outline-none"
+                                />
+                                <div className="flex gap-2">
+                                    <input
+                                        type="number"
+                                        placeholder="Importe €"
+                                        value={incAmount}
+                                        onChange={e => setIncAmount(e.target.value)}
+                                        className="w-1/2 text-sm p-2 rounded-lg border border-emerald-200 focus:ring-1 focus:ring-emerald-500 outline-none"
+                                    />
+                                    <select
+                                        value={incAccId}
+                                        onChange={e => setIncAccId(e.target.value)}
+                                        className="w-1/2 text-sm p-2 rounded-lg border border-emerald-200 bg-white"
+                                    >
+                                        <option value="">Ingresar en...</option>
+                                        {accounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+                                    </select>
+                                </div>
+                                <div className="flex gap-2 pt-2">
+                                    <button onClick={() => setIsAddingInc(false)} className="flex-1 py-1.5 text-xs text-slate-500 bg-white rounded-lg border border-slate-200">Cancelar</button>
+                                    <button
+                                        onClick={handleAddIncome}
+                                        disabled={!incDesc || !incAmount || !incAccId || isSubmittingInc}
+                                        className="flex-1 py-1.5 text-xs font-bold text-white bg-emerald-600 rounded-lg disabled:opacity-50"
+                                    >
+                                        {isSubmittingInc ? 'Guardando...' : 'Registrar Ingreso'}
+                                    </button>
+                                </div>
+                            </div>
+                        </Card>
+                    )}
+
+                    <div className="space-y-2">
+                        {incomes.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()).slice(0, 10).map(inc => (
+                            <div key={inc.id} className="flex justify-between items-center p-3 bg-white border border-slate-100 rounded-xl shadow-sm">
+                                <div>
+                                    <p className="text-sm font-medium text-slate-800">{inc.description}</p>
+                                    <p className="text-[10px] text-slate-500">
+                                        {new Date(inc.date).toLocaleDateString('es-ES')} • {accounts.find(a => a.id === inc.account_id)?.name || 'Cuenta borrada'}
+                                    </p>
+                                </div>
+                                <div className="flex items-center gap-3">
+                                    <div className="text-emerald-600 font-bold text-sm">
+                                        +{inc.amount.toLocaleString('es-ES')} €
+                                    </div>
+                                    <button
+                                        onClick={() => handleDeleteIncome(inc.id)}
+                                        className="p-1 text-slate-300 hover:text-red-500 transition-colors"
+                                    >
+                                        <Trash2 size={14} />
+                                    </button>
+                                </div>
+                            </div>
+                        ))}
+                        {incomes.length === 0 && (
+                            <div className="text-center p-4 bg-slate-50 rounded-xl border border-dashed border-slate-200 text-slate-400 text-sm">
+                                No hay ingresos registrados recientemente.
+                            </div>
+                        )}
+                    </div>
+                </div>
             </div>
 
             {/* Investments Breakdown */}

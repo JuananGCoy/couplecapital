@@ -16,6 +16,9 @@ export function SyncHandler() {
     const setGoals = useStore((state) => state.setGoals);
     const setAccounts = useStore((state) => state.setAccounts);
     const setHistory = useStore((state) => state.setHistory);
+    const setShoppingItems = useStore((state) => state.setShoppingItems);
+    const setTasks = useStore((state) => state.setTasks);
+    const setMeals = useStore((state) => state.setMeals);
     const supabase = createClient();
 
     useEffect(() => {
@@ -77,11 +80,17 @@ export function SyncHandler() {
                 const [
                     { data: txData, error: txError },
                     { data: subData, error: subError },
-                    { data: goalData, error: goalError }
+                    { data: goalData, error: goalError },
+                    { data: shoppingData, error: shoppingError },
+                    { data: tasksData, error: tasksError },
+                    { data: mealsData, error: mealsError }
                 ] = await Promise.all([
                     supabase.from("transactions").select("*").eq("household_id", activeH.id).order('date', { ascending: false }),
                     supabase.from("subscriptions").select("*").eq("household_id", activeH.id),
-                    supabase.from("goals").select("*").eq("household_id", activeH.id)
+                    supabase.from("goals").select("*").eq("household_id", activeH.id),
+                    supabase.from("shopping_items").select("*").eq("household_id", activeH.id).order('created_at', { ascending: false }),
+                    supabase.from("household_tasks").select("*").eq("household_id", activeH.id).order('created_at', { ascending: false }),
+                    supabase.from("weekly_meals").select("*").eq("household_id", activeH.id)
                 ]);
 
                 if (!txError && txData) {
@@ -118,6 +127,35 @@ export function SyncHandler() {
                         imageUrl: g.image_url
                     })));
                 }
+
+                if (!shoppingError && shoppingData) {
+                    setShoppingItems(shoppingData.map(s => ({
+                        id: s.id,
+                        household_id: s.household_id,
+                        name: s.name,
+                        is_checked: s.is_checked
+                    })));
+                }
+
+                if (!tasksError && tasksData) {
+                    setTasks(tasksData.map(t => ({
+                        id: t.id,
+                        household_id: t.household_id,
+                        title: t.title,
+                        assigned_to: t.assigned_to,
+                        is_completed: t.is_completed
+                    })));
+                }
+
+                if (!mealsError && mealsData) {
+                    setMeals(mealsData.map(m => ({
+                        id: m.id,
+                        household_id: m.household_id,
+                        day_of_week: m.day_of_week,
+                        meal_type: m.meal_type,
+                        recipe_name: m.recipe_name
+                    })));
+                }
             }
 
             // 3. Load personal data (independent of household, but inside fetchInitialData)
@@ -125,12 +163,14 @@ export function SyncHandler() {
                 { data: wealthData },
                 { data: invData, error: invError },
                 { data: accData, error: accError },
-                { data: histData, error: histError }
+                { data: histData, error: histError },
+                { data: incData, error: incError }
             ] = await Promise.all([
                 supabase.from("wealth").select("*").eq("user_id", user.id).single(),
                 supabase.from("investments").select("*").eq("user_id", user.id),
                 household ? supabase.from("accounts").select("*").or(`user_id.eq.${user.id},and(is_shared.eq.true,household_id.eq.${household.id})`) : supabase.from("accounts").select("*").eq("user_id", user.id),
-                supabase.from("wealth_history").select("*").eq("user_id", user.id).order("recording_date", { ascending: false })
+                supabase.from("wealth_history").select("*").eq("user_id", user.id).order("recording_date", { ascending: false }),
+                supabase.from("incomes").select("*").eq("user_id", user.id).order("date", { ascending: false })
             ]);
 
             if (wealthData) {
@@ -160,9 +200,19 @@ export function SyncHandler() {
                     name: a.name,
                     balance: Number(a.balance),
                     is_primary: a.is_primary,
-                    payroll: Number(a.payroll || 0),
                     is_shared: a.is_shared,
                     household_id: a.household_id
+                })));
+            }
+
+            if (!incError && incData) {
+                useStore.getState().setIncomes(incData.map(i => ({
+                    id: i.id,
+                    user_id: i.user_id,
+                    account_id: i.account_id,
+                    amount: Number(i.amount),
+                    description: i.description,
+                    date: i.date
                 })));
             }
 
